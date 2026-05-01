@@ -136,6 +136,33 @@ int main() {
 "  HAVE_SSE42)
 set(CMAKE_REQUIRED_FLAGS ${OLD_CMAKE_REQURED_FLAGS})
 
+# Check for PCLMULQDQ support in the compiler (requires SSE4.2).
+set(OLD_CMAKE_REQURED_FLAGS ${CMAKE_REQUIRED_FLAGS})
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} /arch:AVX")
+else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -msse4.2 -mpclmul")
+endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+check_cxx_source_compiles("
+#if defined(_MSC_VER)
+#include <intrin.h>
+#include <wmmintrin.h>
+#else  // !defined(_MSC_VER)
+#include <cpuid.h>
+#include <nmmintrin.h>
+#include <wmmintrin.h>
+#endif  // defined(_MSC_VER)
+
+int main() {
+  __m128i a = _mm_set_epi64x(1, 2);
+  __m128i b = _mm_set_epi64x(3, 4);
+  __m128i c = _mm_clmulepi64_si128(a, b, 0x00);
+  (void)c;
+  return 0;
+}
+" HAVE_PCLMUL)
+set(CMAKE_REQUIRED_FLAGS ${OLD_CMAKE_REQURED_FLAGS})
+
 # Check for ARMv8 w/ CRC and CRYPTO extensions support in the compiler.
 set(OLD_CMAKE_REQURED_FLAGS ${CMAKE_REQUIRED_FLAGS})
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
@@ -262,6 +289,28 @@ if(BUILD_SHARED_LIBS)
   set_property(TARGET crc32c_sse42 PROPERTY POSITION_INDEPENDENT_CODE TRUE)
 endif(BUILD_SHARED_LIBS)
 
+# PCLMULQDQ-accelerated CRC32C code is built separately with -mpclmul, so
+# unsupported instructions don't leak into code that runs without PCLMUL.
+add_library(crc32c_sse42_clmul OBJECT "")
+target_sources(crc32c_sse42_clmul
+  PRIVATE
+    "${PROJECT_BINARY_DIR}/include/crc32c/crc32c_config.h"
+    "src/crc32c_sse42_clmul.cc"
+    "src/crc32c_sse42_clmul.h"
+)
+if(HAVE_PCLMUL)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(crc32c_sse42_clmul PRIVATE "/arch:AVX")
+  else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(crc32c_sse42_clmul PRIVATE "-msse4.2" "-mpclmul")
+  endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+endif(HAVE_PCLMUL)
+
+# CMake only enables PIC by default in SHARED and MODULE targets.
+if(BUILD_SHARED_LIBS)
+  set_property(TARGET crc32c_sse42_clmul PROPERTY POSITION_INDEPENDENT_CODE TRUE)
+endif(BUILD_SHARED_LIBS)
+
 # Must be included before CMAKE_INSTALL_INCLUDEDIR is used.
 include(GNUInstallDirs)
 
@@ -270,6 +319,7 @@ add_library(crc32c ""
   # section of target_sources when cmake_minimum_required becomes 3.9 or above.
   $<TARGET_OBJECTS:crc32c_arm64>
   $<TARGET_OBJECTS:crc32c_sse42>
+  $<TARGET_OBJECTS:crc32c_sse42_clmul>
 )
 target_sources(crc32c
   PRIVATE
@@ -283,6 +333,7 @@ target_sources(crc32c
     "src/crc32c_round_up.h"
     "src/crc32c_sse42.h"
     "src/crc32c_sse42_check.h"
+    "src/crc32c_sse42_clmul.h"
     "src/crc32c.cc"
 
   # Only CMake 3.3+ supports PUBLIC sources in targets exported by "install".
@@ -304,6 +355,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set_property(TARGET crc32c APPEND PROPERTY COMPILE_OPTIONS "/WX")
   set_property(TARGET crc32c_arm64 APPEND PROPERTY COMPILE_OPTIONS "/WX")
   set_property(TARGET crc32c_sse42 APPEND PROPERTY COMPILE_OPTIONS "/WX")
+  set_property(TARGET crc32c_sse42_clmul APPEND PROPERTY COMPILE_OPTIONS "/WX")
 endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 
 if(CRC32C_BUILD_TESTS)
